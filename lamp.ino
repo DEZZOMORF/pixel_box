@@ -46,10 +46,10 @@ struct Config {
 } cfg;
 
 // ===== Режими =====
-enum { M_SOLID, M_RAINBOW, M_FIRE, M_CONFETTI, M_BREATHE, M_HEART, M_RAIN, M_SNOW, M_PACMAN, MODE_COUNT };
+enum { M_SOLID, M_RAINBOW, M_FIRE, M_CONFETTI, M_BREATHE, M_HEART, M_RAIN, M_SNOW, M_PACMAN, M_SUNRISE, MODE_COUNT };
 const uint8_t M_ANIM = MODE_COUNT;      // програвання завантаженого файлу
 const uint8_t M_DRAW = MODE_COUNT + 1;  // живе малювання з вебсторінки (після перезавантаження не відновлюється)
-const char* MODE_NAMES[MODE_COUNT] = {"Колір", "Веселка", "Вогонь", "Конфетті", "Дихання", "Серце", "Матриця", "Сніг", "Пакман"};
+const char* MODE_NAMES[MODE_COUNT] = {"Колір", "Веселка", "Вогонь", "Конфетті", "Дихання", "Серце", "Матриця", "Сніг", "Пакман", "Світанок"};
 const char* ANIM_PREFIX = "▶ ";         // так анімації називаються в списку ефектів HA
 
 bool     power      = true;
@@ -221,8 +221,31 @@ void effectPacman() {
   i = (i + 1) % pacSteps.size();
 }
 
+// Світанок: нічне небо теплішає, сонце піднімається знизу; за SUNRISE_MS, далі тримає останній кадр
+#define SUNRISE_MS (15UL * 60 * 1000)
+void effectSunrise() {
+  static uint32_t start = 0, next = 0;
+  if (fxStart) start = millis();
+  if (!fxDue(next, 100)) return;
+  uint8_t k = min<uint32_t>((millis() - start) / (SUNRISE_MS / 255), 255);
+  uint8_t e = ease8InOutQuad(k);
+  float sy = H + 3 - (H - 2) * k / 255.0f;              // центр сонця: з-під низу до y = 5
+  CRGB sun = blend(CRGB(255, 30, 0), CRGB(255, 220, 140), e);
+  for (uint8_t y = 0; y < H; y++) {
+    uint8_t h = y * 255 / (H - 1);                        // 0 вгорі, 255 біля горизонту
+    CRGB sky = blend(blend(CRGB(0, 0, 10), CRGB(25, 0, 30), h), blend(CRGB(255, 150, 50), CRGB(255, 80, 10), h), e);
+    for (uint8_t x = 0; x < W; x++) {
+      float dx = x - 7.5f, dy = y - sy, d = sqrtf(dx * dx + dy * dy);
+      CRGB c = sky;
+      if (d < 3.2f) c = sun;
+      else if (d < 9) nblend(c, sun, (uint8_t)((9 - d) * 28));   // ореол
+      leds[XY(x, y)] = c;
+    }
+  }
+}
+
 void (*EFFECTS[MODE_COUNT])() = {effectSolid, effectRainbow, effectFire, effectConfetti, effectBreathe,
-                                 effectHeart, effectRain, effectSnow, effectPacman};
+                                 effectHeart, effectRain, effectSnow, effectPacman, effectSunrise};
 
 // Тест орієнтації: верхній рядок червоний, лівий стовпчик зелений, кут білий
 void drawTest() {
@@ -360,6 +383,7 @@ void loadAll() {
   color      = prefs.getUInt("color", 0xFF9329);
   animName   = prefs.getString("anim", "");
   if (!prefs.isKey("mv") && mode >= 5) mode = mode == 5 ? M_ANIM : M_SOLID;   // старі номери: 5 анімація, 6 малювання
+  else if (prefs.getUChar("mv", 0) == 1 && mode >= M_SUNRISE) mode++;         // v1: анімація була 9, малювання 10
   prefs.end();
 
   prefs.begin("cfg", true);
@@ -383,7 +407,7 @@ void saveState() {
   prefs.putUChar("bri", brightness);
   prefs.putUInt("color", color);
   prefs.putString("anim", animName);
-  prefs.putUChar("mv", 1);
+  prefs.putUChar("mv", 2);
   prefs.end();
 }
 
@@ -766,6 +790,9 @@ void loop() {
   static uint32_t last = 0;
   if (millis() - last >= 20) {
     last = millis();
+    static bool wasOn = false;
+    if (power && !wasOn) fxStart = true;                  // після вмикання ефект починається спочатку (Світанок)
+    wasOn = power;
     if ((int32_t)(testUntil - millis()) > 0) drawTest();
     else if (power) {
       if (mode == M_ANIM) animStep();
