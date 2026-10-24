@@ -391,12 +391,18 @@ void changed() {
 
 void showLeds() {
   bool on = power || (int32_t)(testUntil - millis()) > 0;
-  // Потужність росте не швидше ніж на 60 мВт за кадр (≈3 Вт/с): різкий стрибок яскравості (напр. одразу
-  // денний кадр «Заходу») просаджує живлення й перезапускає ESP32 (brownout)
-  static uint32_t lastMw = 0;
-  uint32_t cap = min<uint32_t>(5 * cfg.maxMa, lastMw + 60);
-  uint8_t b = on ? calculate_max_brightness_for_power_mW(leds, NUM_LEDS, brightness, cap) : 0;
-  lastMw = calculate_unscaled_power_mW(leds, NUM_LEDS) * b / 256;
+  // Ліміт струму. Яскравість рахується від пікової потужності кадрів, що повільно спадає (~4 с), тож не скаче
+  // з кожним кадром «Вогню»; повзунок діє завжди: 255 = максимум, який дозволяє ліміт для поточного ефекту.
+  // Після вмикання чи зміни режиму ліміт наростає ~1 с — різкий стрибок струму просаджує живлення (brownout).
+  static uint32_t peak = 0, ramp = 0;
+  static uint8_t lastMode = 255;
+  uint32_t full = calculate_unscaled_power_mW(leds, NUM_LEDS);          // потужність кадру на яскравості 255
+  peak = max(full, peak - peak / 256);
+  if (!on || mode != lastMode) ramp = 0;
+  lastMode = mode;
+  ramp = min<uint32_t>(5 * cfg.maxMa, ramp + 150);
+  uint8_t bMax = min<uint32_t>(255, (uint64_t)ramp * 256 / max<uint32_t>(peak, 1));
+  uint8_t b = on ? (uint16_t)bMax * brightness / 255 : 0;
   for (uint16_t i = 0; i < NUM_LEDS; i++) {
     CRGB c = leds[i];
     c.nscale8_video(b);
