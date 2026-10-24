@@ -41,4 +41,6 @@ CLI="/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/
 curl -F "fw=@build/lamp.ino.bin" http://192.168.50.64/update
 ```
 
+Діагностика: `http://<IP>/crash` показує причину останнього перезапуску (`esp_reset_reason`: 9 = просідання живлення) і підсумок coredump останнього падіння.
+
 IP видає DHCP. Якщо адреса змінилась, знайти її можна командою `arp -a | grep lamp`.

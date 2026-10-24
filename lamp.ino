@@ -10,6 +10,7 @@
 #include <Adafruit_NeoPixel.h>    // вивід на матрицю (перевірено, що працює)
 #include <vector>
 #include <esp_https_server.h>
+#include <esp_core_dump.h>
 #include "page.h"
 #include "cam.h"
 #include "secrets.h"   // Wi-Fi і пароль точки доступу; не в git, зразок у secrets.example.h
@@ -387,7 +388,12 @@ void changed() {
 
 void showLeds() {
   bool on = power || (int32_t)(testUntil - millis()) > 0;
-  uint8_t b = on ? calculate_max_brightness_for_power_mW(leds, NUM_LEDS, brightness, 5 * cfg.maxMa) : 0;
+  // Потужність росте не швидше ніж на 60 мВт за кадр (≈3 Вт/с): різкий стрибок яскравості (напр. одразу
+  // денний кадр «Заходу») просаджує живлення й перезапускає ESP32 (brownout)
+  static uint32_t lastMw = 0;
+  uint32_t cap = min<uint32_t>(5 * cfg.maxMa, lastMw + 60);
+  uint8_t b = on ? calculate_max_brightness_for_power_mW(leds, NUM_LEDS, brightness, cap) : 0;
+  lastMw = calculate_unscaled_power_mW(leds, NUM_LEDS) * b / 256;
   for (uint16_t i = 0; i < NUM_LEDS; i++) {
     CRGB c = leds[i];
     c.nscale8_video(b);
@@ -574,6 +580,17 @@ void handleSet() {
   if (server.hasArg("color")) setColor(strtoul(server.arg("color").c_str(), nullptr, 16));
   changed();
   sendState();
+}
+
+// Діагностика: причина останнього перезапуску й підсумок coredump останнього падіння (адреси — для addr2line)
+void handleCrash() {
+  String s = "reset=" + String(esp_reset_reason()) + "\n";
+  esp_core_dump_summary_t sum;
+  if (esp_core_dump_get_summary(&sum) == ESP_OK) {
+    s += "task=" + String(sum.exc_task) + " pc=0x" + String(sum.exc_pc, HEX) + "\nbt=";
+    for (uint32_t i = 0; i < sum.exc_bt_info.depth; i++) s += "0x" + String(sum.exc_bt_info.bt[i], HEX) + " ";
+  } else s += "no coredump";
+  server.send(200, "text/plain", s);
 }
 
 void handleCfg() {
@@ -780,6 +797,7 @@ void setup() {
 
   server.on("/",       [] { server.send(200, "text/html", PAGE); });
   server.on("/state",  sendState);
+  server.on("/crash",  handleCrash);
   server.on("/set",    handleSet);
   server.on("/cfg",    handleCfg);
   server.on("/net",    HTTP_POST, handleNet);
