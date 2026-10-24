@@ -350,8 +350,11 @@ void setMode(uint8_t m) {
   closeAnim();
 }
 
+bool rampReset = false;                  // наступний кадр — з плавного старту ліміту струму (showLeds)
+
 bool playAnim(const String& n) {
   animName = cleanName(n);
+  rampReset = true;                      // інша анімація в тому ж M_ANIM — mode не змінюється
   mode = M_ANIM;
   if (openAnim()) return true;
   setMode(M_SOLID);
@@ -398,8 +401,9 @@ void showLeds() {
   static uint8_t lastMode = 255;
   uint32_t full = calculate_unscaled_power_mW(leds, NUM_LEDS);          // потужність кадру на яскравості 255
   peak = max(full, peak - peak / 256);
-  if (!on || mode != lastMode) ramp = 0;
+  if (!on || mode != lastMode || rampReset) ramp = 0;
   lastMode = mode;
+  rampReset = false;
   ramp = min<uint32_t>(5 * cfg.maxMa, ramp + 150);
   uint8_t bMax = min<uint32_t>(255, (uint64_t)ramp * 256 / max<uint32_t>(peak, 1));
   uint8_t b = on ? (uint16_t)bMax * brightness / 255 : 0;
