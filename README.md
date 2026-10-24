@@ -11,7 +11,7 @@ ESP32 DevKit (CH340), матриця WS2812B 16x16, дані на D13 (GPIO13).
 
 ## Файли
 
-- `lamp.ino`: прошивка (ефекти, LittleFS-анімації, MQTT для Home Assistant, OTA, HTTPS + WebSocket для камери).
+- `matrix.ino`: прошивка (ефекти, LittleFS-анімації, MQTT для Home Assistant, OTA, HTTPS + WebSocket для камери).
 - `page.h`: веб-інтерфейс (керування, медіа, малювання, налаштування).
 - `cam.h`: HTTPS-сторінка трансляції з камери телефону.
 - `pacman.h`: спрайти й палітри для режиму «Пакман», без змін узяті з оригіналу.
@@ -38,7 +38,7 @@ cp secrets.example.h secrets.h    # вписати свій Wi-Fi
 ```sh
 CLI="/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli"
 "$CLI" compile --fqbn esp32:esp32:esp32 --output-dir build .
-curl -F "fw=@build/lamp.ino.bin" http://192.168.50.64/update
+curl -F "fw=@build/matrix.ino.bin" http://192.168.50.64/update
 ```
 
 Діагностика: `http://<IP>/crash` показує причину останнього перезапуску (`esp_reset_reason`: 9 = просідання живлення) і підсумок coredump останнього падіння.
