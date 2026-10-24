@@ -240,12 +240,14 @@ void drawSky(uint8_t k) {
   }
 }
 
-#define SKY_MS (15UL * 60 * 1000)                       // тривалість світанку й заходу
+// Тривалість світанку й заходу: 15 хв, або скільки передали в MQTT-команді ("duration", с) — напр. від заходу до 23:00
+#define SKY_MS_DEFAULT (15UL * 60 * 1000)
+uint32_t skyMs = SKY_MS_DEFAULT;
 
-// Прогрес ефекту від запуску: 0..255 за SKY_MS
+// Прогрес ефекту від запуску: 0..255 за skyMs
 uint8_t skyProgress(uint32_t& start) {
   if (fxStart) start = millis();
-  return min<uint32_t>((millis() - start) / (SKY_MS / 255), 255);
+  return min<uint32_t>((millis() - start) / (skyMs / 255), 255);
 }
 
 // Світанок: нічне небо теплішає, сонце піднімається знизу; далі тримає останній кадр
@@ -342,6 +344,7 @@ void animStep() {
 // ===== Керування станом =====
 void setMode(uint8_t m) {
   if (m >= MODE_COUNT) return;
+  skyMs = SKY_MS_DEFAULT;
   if (m != mode) fxStart = true;
   mode = m;
   closeAnim();
@@ -512,6 +515,10 @@ void onMqtt(char* tp, byte* payload, unsigned int len) {
   if (d["color"].is<JsonObject>())
     setColor((uint32_t)(d["color"]["r"] | 0) << 16 | (d["color"]["g"] | 0) << 8 | (d["color"]["b"] | 0));
   if (d["effect"].is<const char*>()) setEffect(d["effect"].as<String>());
+  if (d["duration"].is<uint32_t>()) {                      // тривалість Світанку/Заходу, починаємо заново
+    skyMs = constrain(d["duration"].as<uint32_t>(), 60UL, 12UL * 3600) * 1000;
+    fxStart = true;
+  }
   changed();
 }
 
