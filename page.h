@@ -1,7 +1,5 @@
 #pragma once
 
-// Вебсторінка лампи. Фото/GIF/відео конвертуються в 16x16 прямо в браузері,
-// на плату йдуть уже готові кадри.
 const char PAGE[] = R"HTML(<!doctype html>
 <html lang="uk"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -141,7 +139,6 @@ function render(){
 $('pw').onclick=()=>set({power:st.power?0:1});
 $('bri').onchange=e=>set({bri:e.target.value});
 $('col').onchange=e=>set({color:e.target.value.slice(1)});
-// Повзунок швидкості логарифмічний: -100..100 → ×0.25..×4, посередині ×1 (біля середини прилипає до ×1)
 const toSpd=v=>Math.abs(v)<6?100:Math.round(100*Math.pow(4,v/100));
 const fromSpd=s=>Math.round(Math.log(s/100)/Math.log(4)*100);
 const spdLabel=()=>$('spdv').textContent='×'+ +(toSpd(+$('spd').value)/100).toFixed(2);
@@ -168,7 +165,6 @@ $('fwbtn').onclick=()=>{
   x.send(fd);
 };
 
-// ---------- Конвертація медіа в 16x16 ----------
 const mk=(w,h=w)=>{const c=document.createElement('canvas');c.width=w;c.height=h;return c;};
 const maxFrames=()=>Math.max(0,Math.floor((st.fsFree||0)*0.9/770));
 const slug=n=>n.replace(/\.[^.]+$/,'').replace(/[^\p{L}\p{N}_-]+/gu,'_').replace(/^_+|_+$/g,'').slice(0,24);
@@ -181,7 +177,7 @@ function to16(src){
   let c=mk(S), g=c.getContext('2d');
   g.fillStyle='#000'; g.fillRect(0,0,S,S); g.imageSmoothingQuality='high';
   g.drawImage(src,(S-dw)/2,(S-dh)/2,dw,dh);
-  while(c.width>32){                         // зменшуємо поступово — так менше «зерна»
+  while(c.width>32){
     const n=Math.max(16,c.width>>1), t=mk(n), tg=t.getContext('2d');
     tg.imageSmoothingQuality='high'; tg.drawImage(c,0,0,n,n); c=t;
   }
@@ -190,9 +186,6 @@ function to16(src){
   return fg.getImageData(0,0,16,16).data;
 }
 
-// ---------- Піксель-арт: без розмиття ----------
-// Знаходимо справжній розмір "пікселя" у збільшеному малюнку, беремо по одній точці з кожного
-// блоку, обрізаємо прозорі поля і переносимо на 16x16 цілими пікселями.
 let how='';
 function rgbaOf(src){
   const w=src.naturalWidth||src.width, h=src.naturalHeight||src.height;
@@ -202,7 +195,7 @@ function rgbaOf(src){
 function grid({w,h,d}){
   const same=(i,j)=>Math.abs(d[i]-d[j])+Math.abs(d[i+1]-d[j+1])+Math.abs(d[i+2]-d[j+2])+Math.abs(d[i+3]-d[j+3])<48;
   const gcd=(a,b)=>{while(b)[a,b]=[b,a%b];return a;};
-  const scan=(len,lines,at)=>{                    // НСД довжин внутрішніх однокольорових відрізків
+  const scan=(len,lines,at)=>{
     let g=0, phase=-1;
     for(let l=0;l<lines&&g!==1;l+=Math.max(1,lines>>6)){
       let start=-1;
@@ -225,7 +218,7 @@ function isPixelArt(img){
   if(img.w*img.h>1024*1024||colorCount(img)>256) return false;
   return grid(img).b>=2||Math.max(img.w,img.h)<=64;
 }
-function pixelize(raw){                            // raw: [{img:{w,h,d}, delay}]
+function pixelize(raw){
   const {b,ox,oy}=grid(raw[0].img);
   const nat=raw.map(({img})=>{
     const nw=Math.floor((img.w-ox)/b), nh=Math.floor((img.h-oy)/b), d=new Uint8ClampedArray(nw*nh*4);
@@ -235,7 +228,7 @@ function pixelize(raw){                            // raw: [{img:{w,h,d}, delay}
     }
     return {w:nw,h:nh,d};
   });
-  let x0=1e9,y0=1e9,x1=-1,y1=-1;                   // спільна рамка без прозорих полів для всіх кадрів
+  let x0=1e9,y0=1e9,x1=-1,y1=-1;
   for(const n of nat) for(let y=0;y<n.h;y++) for(let x=0;x<n.w;x++)
     if(n.d[(y*n.w+x)*4+3]>16){x0=Math.min(x0,x);y0=Math.min(y0,y);x1=Math.max(x1,x+1);y1=Math.max(y1,y+1);}
   if(x1<0){x0=0;y0=0;x1=nat[0].w;y1=nat[0].h;}
@@ -260,7 +253,6 @@ function pixelize(raw){                            // raw: [{img:{w,h,d}, delay}
 function loadImg(f){return new Promise((res,rej)=>{const i=new Image();
   i.onload=()=>res(i); i.onerror=()=>rej(new Error('Не вдалося відкрити зображення')); i.src=URL.createObjectURL(f);});}
 
-// Мінімальний GIF-декодер: віддає кожен кадр як повне зображення RGBA
 function decodeGIF(buf,onFrame,limit){
   const b=new Uint8Array(buf); let p=0;
   const u16=()=>{const v=b[p]|b[p+1]<<8;p+=2;return v;};
@@ -419,7 +411,6 @@ $('send').onclick=()=>{
   x.send(fd);
 };
 
-// ---------- Малювання ----------
 const PAL=['#000000','#ffffff','#ff0000','#ff8000','#ffd200','#00ff00','#00ffff','#0000ff','#8000ff','#ff00ff','#ff6090','#804000','#808080','#204020','#003080','#ffb080'];
 let pix=new Uint8ClampedArray(1024), tool='pen', hist=[], drawing=false, liveTimer=null, liveDirty=false;
 for(let i=3;i<1024;i+=4) pix[i]=255;

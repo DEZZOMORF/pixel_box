@@ -1,7 +1,5 @@
 #pragma once
 
-// Сторінка трансляції з камери. Віддається по HTTPS, бо браузери дають доступ
-// до камери лише на захищених сторінках. Кадри 16x16 RGB ідуть на лампу по WebSocket.
 const char CAM_PAGE[] = R"HTML(<!doctype html>
 <html lang="uk"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
