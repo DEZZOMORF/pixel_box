@@ -240,33 +240,6 @@ bool localNow(struct tm& t, float& sec) {
   return true;
 }
 
-const uint8_t DIGITS[10][7] = {
-  {14, 17, 19, 21, 25, 17, 14}, {4, 12, 4, 4, 4, 4, 14},   {14, 17, 1, 2, 4, 8, 31},  {31, 2, 4, 2, 1, 17, 14},
-  {2, 6, 10, 18, 31, 2, 2},     {31, 16, 30, 1, 1, 17, 14}, {6, 8, 16, 30, 17, 17, 14}, {31, 1, 2, 4, 8, 8, 8},
-  {14, 17, 17, 14, 17, 17, 14}, {14, 17, 17, 15, 1, 2, 12}};
-
-void drawDigit(uint8_t d, uint8_t x0, uint8_t y0, CRGB c) {
-  for (uint8_t y = 0; y < 7; y++)
-    for (uint8_t x = 0; x < 5; x++)
-      if (DIGITS[d][y] >> (4 - x) & 1) leds[XY(x0 + x, y0 + y)] = c;
-}
-
-void drawTime() {
-  fill_solid(leds, NUM_LEDS, CRGB::Black);
-  CRGB c(color);
-  struct tm t;
-  float s;
-  if (!localNow(t, s)) {
-    for (uint8_t x = 2; x <= 13; x++) if (x < 7 || x > 8) leds[XY(x, 3)] = leds[XY(x, 12)] = c;
-    return;
-  }
-  drawDigit(t.tm_hour / 10, 2, 0, c);
-  drawDigit(t.tm_hour % 10, 9, 0, c);
-  drawDigit(t.tm_min / 10, 2, 9, c);
-  drawDigit(t.tm_min % 10, 9, 9, c);
-  if (s - (int)s < 0.5f) leds[XY(7, 7)] = leds[XY(8, 7)] = leds[XY(7, 8)] = leds[XY(8, 8)] = c;
-}
-
 void plot(float x, float y, CRGB c) {
   int x0 = floorf(x), y0 = floorf(y);
   float fx = x - x0, fy = y - y0;
@@ -323,6 +296,31 @@ void drawText(const char* s, int x, int y, CRGB c) {
         for (uint8_t b = 0; b < 3; b++)
           if (SMALL_DIGITS[*p - '0'][r] >> (2 - b) & 1) leds[XY(x + b, y + r)] = c;
     x += (*p == '-' ? 2 : 3) + 1;
+  }
+}
+
+void drawTime() {
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  CRGB c(color), dim = c;
+  dim.nscale8_video(140);
+  struct tm t;
+  float s;
+  if (!localNow(t, s)) {
+    for (uint8_t x = 0; x < W; x++)
+      if (x < 7 || x > 8) { leds[XY(x, 3)] = c; leds[XY(x, 9)] = dim; }
+    return;
+  }
+  char b[3];
+  const int rows[4][3] = {{t.tm_hour, 0, 1}, {t.tm_min, 9, 1}, {t.tm_mday, 0, 7}, {t.tm_mon + 1, 9, 7}};
+  for (uint8_t i = 0; i < 4; i++) {
+    snprintf(b, sizeof(b), "%02d", rows[i][0]);
+    drawText(b, rows[i][1], rows[i][2], i < 2 ? c : dim);
+  }
+  uint8_t today = (t.tm_wday + 6) % 7;
+  for (uint8_t d = 0; d < 7; d++) {
+    CRGB k = d >= 5 ? CRGB(255, 0, 0) : c;
+    if (d != today) k.nscale8_video(40);
+    for (uint8_t x = 1 + 2 * d; x <= 2 + 2 * d; x++) leds[XY(x, 13)] = leds[XY(x, 14)] = k;
   }
 }
 
