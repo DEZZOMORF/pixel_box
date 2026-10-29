@@ -279,23 +279,29 @@ String   wxCond;
 int64_t  wxTs = 0;
 
 const uint8_t SMALL_DIGITS[10][5] = {
-  {7, 5, 5, 5, 7}, {2, 6, 2, 2, 7}, {7, 1, 7, 4, 7}, {7, 1, 7, 1, 7}, {5, 5, 7, 1, 1},
+  {7, 5, 5, 5, 7}, {1, 3, 1, 1, 1}, {7, 1, 7, 4, 7}, {7, 1, 7, 1, 7}, {5, 5, 7, 1, 1},
   {7, 4, 7, 1, 7}, {7, 4, 7, 5, 7}, {7, 1, 1, 2, 2}, {7, 5, 7, 5, 7}, {7, 5, 7, 1, 7}};
+
+uint8_t charWidth(char ch) {
+  return ch == '.' ? 1 : ch == '-' || ch == '1' ? 2 : 3;
+}
 
 uint8_t textWidth(const char* s) {
   uint8_t w = 0;
-  for (const char* p = s; *p; p++) w += (*p == '-' ? 2 : 3) + (p[1] ? 1 : 0);
+  for (const char* p = s; *p; p++) w += charWidth(*p) + (p[1] ? 1 : 0);
   return w;
 }
 
 void drawText(const char* s, int x, int y, CRGB c) {
   for (const char* p = s; *p; p++) {
+    uint8_t cw = charWidth(*p);
     if (*p == '-') leds[XY(x, y + 2)] = leds[XY(x + 1, y + 2)] = c;
+    else if (*p == '.') leds[XY(x, y + 4)] = c;
     else
       for (uint8_t r = 0; r < 5; r++)
-        for (uint8_t b = 0; b < 3; b++)
-          if (SMALL_DIGITS[*p - '0'][r] >> (2 - b) & 1) leds[XY(x + b, y + r)] = c;
-    x += (*p == '-' ? 2 : 3) + 1;
+        for (uint8_t b = 0; b < cw; b++)
+          if (SMALL_DIGITS[*p - '0'][r] >> (cw - 1 - b) & 1) leds[XY(x + b, y + r)] = c;
+    x += cw + 1;
   }
 }
 
@@ -342,7 +348,7 @@ void drawDate() {
     for (uint8_t x = 0; x < W; x++)
       if (x < 7 || x > 8) {
         if (x >= 2 && x <= 13) leds[XY(x, 4)] = c;
-        leds[XY(x, 12)] = c;
+        if (x >= 2 && x <= 13) leds[XY(x, 12)] = c;
       }
     return;
   }
@@ -350,11 +356,9 @@ void drawDate() {
   CRGB wc = d >= 5 ? CRGB(255, 0, 0) : c;
   drawGlyph(LETTERS[WEEKDAYS[d][0]], 2, 1, wc);
   drawGlyph(LETTERS[WEEKDAYS[d][1]], 9, 1, wc);
-  char b[3];
-  snprintf(b, sizeof(b), "%02d", t.tm_mday);
-  drawText(b, 0, 10, c);
-  snprintf(b, sizeof(b), "%02d", t.tm_mon + 1);
-  drawText(b, 9, 10, c);
+  char b[6];
+  snprintf(b, sizeof(b), "%d.%d", t.tm_mday, t.tm_mon + 1);
+  drawText(b, (W - textWidth(b)) / 2, 10, c);
 }
 
 const SmallIcon* wxIcon(const String& cond) {
