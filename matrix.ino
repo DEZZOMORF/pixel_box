@@ -299,29 +299,62 @@ void drawText(const char* s, int x, int y, CRGB c) {
   }
 }
 
+const uint8_t DIGITS[10][7] = {
+  {14, 17, 19, 21, 25, 17, 14}, {4, 12, 4, 4, 4, 4, 14},   {14, 17, 1, 2, 4, 8, 31},  {31, 2, 4, 2, 1, 17, 14},
+  {2, 6, 10, 18, 31, 2, 2},     {31, 16, 30, 1, 1, 17, 14}, {6, 8, 16, 30, 17, 17, 14}, {31, 1, 2, 4, 8, 8, 8},
+  {14, 17, 17, 14, 17, 17, 14}, {14, 17, 17, 15, 1, 2, 12}};
+
+const uint8_t LETTERS[9][7] = {
+  {31, 17, 17, 17, 17, 17, 17}, {17, 17, 17, 31, 17, 17, 17}, {30, 17, 17, 30, 17, 17, 30},
+  {31, 4, 4, 4, 4, 4, 4},       {14, 17, 16, 16, 16, 17, 14}, {30, 17, 17, 30, 16, 16, 16},
+  {17, 17, 17, 15, 1, 1, 1},    {31, 16, 16, 30, 17, 17, 30}, {14, 10, 10, 10, 10, 31, 17}};
+
+const uint8_t WEEKDAYS[7][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 3}, {0, 3}, {4, 7}, {1, 8}};
+
+void drawGlyph(const uint8_t* rows, uint8_t x0, uint8_t y0, CRGB c) {
+  for (uint8_t y = 0; y < 7; y++)
+    for (uint8_t x = 0; x < 5; x++)
+      if (rows[y] >> (4 - x) & 1) leds[XY(x0 + x, y0 + y)] = c;
+}
+
 void drawTime() {
   fill_solid(leds, NUM_LEDS, CRGB::Black);
-  CRGB c(color), dim = c;
-  dim.nscale8_video(140);
+  CRGB c(color);
+  struct tm t;
+  float s;
+  if (!localNow(t, s)) {
+    for (uint8_t x = 2; x <= 13; x++) if (x < 7 || x > 8) leds[XY(x, 3)] = leds[XY(x, 12)] = c;
+    return;
+  }
+  drawGlyph(DIGITS[t.tm_hour / 10], 2, 0, c);
+  drawGlyph(DIGITS[t.tm_hour % 10], 9, 0, c);
+  drawGlyph(DIGITS[t.tm_min / 10], 2, 9, c);
+  drawGlyph(DIGITS[t.tm_min % 10], 9, 9, c);
+  if (s - (int)s < 0.5f) leds[XY(7, 7)] = leds[XY(8, 7)] = leds[XY(7, 8)] = leds[XY(8, 8)] = c;
+}
+
+void drawDate() {
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  CRGB c(color);
   struct tm t;
   float s;
   if (!localNow(t, s)) {
     for (uint8_t x = 0; x < W; x++)
-      if (x < 7 || x > 8) { leds[XY(x, 3)] = c; leds[XY(x, 9)] = dim; }
+      if (x < 7 || x > 8) {
+        if (x >= 2 && x <= 13) leds[XY(x, 4)] = c;
+        leds[XY(x, 12)] = c;
+      }
     return;
   }
+  uint8_t d = (t.tm_wday + 6) % 7;
+  CRGB wc = d >= 5 ? CRGB(255, 0, 0) : c;
+  drawGlyph(LETTERS[WEEKDAYS[d][0]], 2, 1, wc);
+  drawGlyph(LETTERS[WEEKDAYS[d][1]], 9, 1, wc);
   char b[3];
-  const int rows[4][3] = {{t.tm_hour, 0, 1}, {t.tm_min, 9, 1}, {t.tm_mday, 0, 7}, {t.tm_mon + 1, 9, 7}};
-  for (uint8_t i = 0; i < 4; i++) {
-    snprintf(b, sizeof(b), "%02d", rows[i][0]);
-    drawText(b, rows[i][1], rows[i][2], i < 2 ? c : dim);
-  }
-  uint8_t today = (t.tm_wday + 6) % 7;
-  for (uint8_t d = 0; d < 7; d++) {
-    CRGB k = d >= 5 ? CRGB(255, 0, 0) : c;
-    if (d != today) k.nscale8_video(40);
-    for (uint8_t x = 1 + 2 * d; x <= 2 + 2 * d; x++) leds[XY(x, 13)] = leds[XY(x, 14)] = k;
-  }
+  snprintf(b, sizeof(b), "%02d", t.tm_mday);
+  drawText(b, 0, 10, c);
+  snprintf(b, sizeof(b), "%02d", t.tm_mon + 1);
+  drawText(b, 9, 10, c);
 }
 
 const SmallIcon* wxIcon(const String& cond) {
@@ -358,14 +391,24 @@ void drawWeather() {
 }
 
 void clockPages(void (*drawClock)()) {
-  const uint32_t CLOCK_MS = 10000, CYCLE_MS = 15000, FADE_MS = 300;
+  const uint32_t FADE_MS = 300;
   int64_t age = (int64_t)time(nullptr) - wxTs;
   bool fresh = time(nullptr) > 1700000000 && age > -600 && age < 3 * 3600 && (!isnan(wxIn) || !isnan(wxOut));
-  if (!fresh) { drawClock(); return; }
-  uint32_t t = millis() % CYCLE_MS;
-  if (t < CLOCK_MS) drawClock(); else drawWeather();
-  uint32_t edge = t < CLOCK_MS ? min(t, CLOCK_MS - t) : min(t - CLOCK_MS, CYCLE_MS - t);
-  if (edge < FADE_MS) nscale8_video(leds, NUM_LEDS, edge * 255 / FADE_MS);
+  struct Page { void (*draw)(); uint32_t ms; };
+  const Page pages[3] = {{drawClock, 10000}, {drawDate, 5000}, {drawWeather, 5000}};
+  uint8_t n = fresh ? 3 : 2;
+  uint32_t cycle = 0;
+  for (uint8_t i = 0; i < n; i++) cycle += pages[i].ms;
+  uint32_t t = millis() % cycle;
+  for (uint8_t i = 0; i < n; i++) {
+    if (t < pages[i].ms) {
+      pages[i].draw();
+      uint32_t edge = min(t, pages[i].ms - t);
+      if (edge < FADE_MS) nscale8_video(leds, NUM_LEDS, edge * 255 / FADE_MS);
+      return;
+    }
+    t -= pages[i].ms;
+  }
 }
 
 void effectClock() { clockPages(drawTime); }
