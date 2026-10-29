@@ -11,11 +11,13 @@
 #include <vector>
 #include <esp_https_server.h>
 #include <esp_core_dump.h>
+#include <time.h>
+#include <sys/time.h>
 #include "page.h"
 #include "cam.h"
 #include "secrets.h"   // Wi-Fi і пароль точки доступу; не в git, зразок у secrets.example.h
 #include "cert.h"      // HTTPS-сертифікат; не в git, генерується gen_cert.sh
-#include "pacman.h"
+#include "icons.h"
 
 // ===== Залізо =====
 #define DATA_PIN    13
@@ -29,6 +31,7 @@
 // Значення за замовчуванням; змінюються у вебсторінці (Налаштування)
 const char* AP_SSID  = "Lamp";          // запасна точка доступу, якщо Wi-Fi недоступний
 const char* HOSTNAME = "lamp";          // http://lamp.local
+const char* TZ_INFO  = "EET-2EEST,M3.5.0/3,M10.5.0/4";   // Europe/Kyiv, для годинника
 
 CRGB leds[NUM_LEDS];
 Adafruit_NeoPixel strip(NUM_LEDS, DATA_PIN, NEO_GRB + NEO_KHZ800);
@@ -47,16 +50,17 @@ struct Config {
 } cfg;
 
 // ===== Режими =====
-enum { M_SOLID, M_RAINBOW, M_FIRE, M_CONFETTI, M_BREATHE, M_HEART, M_RAIN, M_SNOW, M_PACMAN, M_SUNRISE, M_SUNSET, MODE_COUNT };
+enum { M_SOLID, M_RAINBOW, M_FIRE, M_CONFETTI, M_HEART, M_RAIN, M_SNOW, M_SUNRISE, M_SUNSET, M_CLOCK, M_DIAL, MODE_COUNT };
 const uint8_t M_ANIM = MODE_COUNT;      // програвання завантаженого файлу
 const uint8_t M_DRAW = MODE_COUNT + 1;  // живе малювання з вебсторінки (після перезавантаження не відновлюється)
-const char* MODE_NAMES[MODE_COUNT] = {"Колір", "Веселка", "Вогонь", "Конфетті", "Дихання", "Серце", "Матриця", "Сніг", "Пакман", "Світанок", "Захід"};
+const char* MODE_NAMES[MODE_COUNT] = {"Колір", "Веселка", "Вогонь", "Конфетті", "Серце", "Матриця", "Сніг", "Світанок", "Захід", "Годинник", "Циферблат"};
 const char* ANIM_PREFIX = "▶ ";         // так анімації називаються в списку ефектів HA
 
 bool     power      = true;
 uint8_t  mode       = M_SOLID;
 uint8_t  brightness = 80;
 uint32_t color      = 0xFF9329;         // теплий білий
+uint16_t speed      = 100;              // швидкість анімацій, % (25..400)
 String   animName;
 
 struct Anim { String name; uint16_t frames; };
@@ -67,6 +71,7 @@ uint8_t  drawBuf[FRAME_BYTES];
 uint8_t  gamma8[256];
 uint32_t testUntil = 0, dirtyAt = 0;
 bool     fxStart = true;                // перший кадр ефекту після перемикання
+uint32_t fxClock = 0;                   // час ефектів, мс: іде зі швидкістю speed (по 20 мс на крок)
 bool     apMode = false;
 String   devId;
 
@@ -116,14 +121,9 @@ void effectConfetti() {
   leds[random16(NUM_LEDS)] += CHSV(random8(), 200, 255);
 }
 
-void effectBreathe() {
-  fill_solid(leds, NUM_LEDS, CRGB(color));
-  nscale8_video(leds, NUM_LEDS, beatsin8(12, 30, 255));
-}
-
-// Чи настав час наступного кадру; при відставанні не надолужуємо, а починаємо відлік заново
+// Чи настав час наступного кадру (за fxClock); при відставанні не надолужуємо, а починаємо відлік заново
 bool fxDue(uint32_t& next, uint16_t ms) {
-  uint32_t now = millis();
+  uint32_t now = fxClock;
   if (!fxStart && (int32_t)(now - next) < 0) return false;
   next = (fxStart || (int32_t)(now - next) > 500) ? now + ms : next + ms;
   return true;
@@ -138,7 +138,7 @@ void effectHeart() {              // серце, що б'ється: подві�
   float k = 6.2f * BEAT[i];
   for (uint8_t y = 0; y < H; y++)
     for (uint8_t x = 0; x < W; x++) {
-      float u = (x - 7.5f) / k, v = -(y - 7.0f) / k, t = u * u + v * v - 0.5f;
+      float u = (x - 7.5f) / k, v = -(y - 8.5f) / k, t = u * u + v * v - 0.5f;
       leds[XY(x, y)] = t * t * t - u * u * v * v * v * 0.9f <= 0 ? CRGB(255, 0, 6) : CRGB::Black;
     }
   i = (i + 1) % (sizeof(BEAT) / sizeof(BEAT[0]));
@@ -178,48 +178,6 @@ void effectSnow() {               // снігопад: ближні сніжин
     if (p.y >= H * 16) p = {random8(W), (int16_t)-random8(32), random8() < 128};
     if (p.y >= 0) leds[XY(p.x, p.y / 16)] = p.near ? CRGB(255, 255, 255) : CRGB(56, 56, 100);
   }
-}
-
-// Пакман: покадрова копія loop() з PacChaseLogo.ino — вікно 16x16 ковзає по спрайтах 112 пікселів завширшки
-#define PAC_W 112
-struct PacSprite { const uint8_t* px; const uint32_t* pal; uint16_t len; };
-const PacSprite PAC_SPRITES[] = {
-  {LogoSprite, LogoPalette, sizeof(LogoSprite)},
-  {PacSpriteM, PacPaletteM, sizeof(PacSpriteM)}, {PacSpriteT, PacPaletteT, sizeof(PacSpriteT)}, {PacSpriteB, PacPaletteB, sizeof(PacSpriteB)},
-  {PacSpriteM2, PacPaletteM2, sizeof(PacSpriteM2)}, {PacSpriteT2, PacPaletteT2, sizeof(PacSpriteT2)}, {PacSpriteB2, PacPaletteB2, sizeof(PacSpriteB2)},
-};
-enum { PS_LOGO, PS_M, PS_T, PS_B, PS_M2, PS_T2, PS_B2 };
-struct PacStep { uint8_t spr, ox, oy, delay; };
-std::vector<PacStep> pacSteps;
-
-void buildPacSteps() {
-  auto add = [](uint8_t s, int x, int y, uint8_t d) { pacSteps.push_back({s, (uint8_t)x, (uint8_t)y, d}); };
-  auto pacChase = [&](int start) {
-    for (int x = start; x < PAC_W - 16; x += 4) { add(PS_M, x, 0, 70); add(PS_T, x + 1, 0, 70); add(PS_M, x + 2, 0, 70); add(PS_B, x + 3, 0, 70); }
-  };
-  auto ghostChase = [&] {
-    for (int x = PAC_W - 20; x > 15; x -= 4) { add(PS_M2, x, 0, 70); add(PS_T2, x - 1, 0, 70); add(PS_M2, x - 2, 0, 70); add(PS_B2, x - 3, 0, 70); }
-  };
-  for (int y = 16; y > 0; y--) add(PS_LOGO, 0, y, 40);           // логотип виїжджає знизу
-  for (int x = 0; x < PAC_W - 15; x++) add(PS_LOGO, x, 0, 60);   // і прокручується
-  pacChase(0); ghostChase();
-  for (int i = 0; i < 3; i++) { pacChase(14); ghostChase(); }
-}
-
-void effectPacman() {
-  static uint16_t i = 0;
-  static uint32_t next = 0;
-  if (pacSteps.empty()) buildPacSteps();
-  if (fxStart) i = 0;
-  const PacStep& s = pacSteps[i];
-  if (!fxDue(next, s.delay)) return;
-  const PacSprite& sp = PAC_SPRITES[s.spr];
-  for (uint8_t y = 0; y < H; y++)
-    for (uint8_t x = 0; x < W; x++) {
-      uint16_t pos = ((y + s.oy) * PAC_W + (s.ox + x) % PAC_W) % (PAC_W * 32);
-      leds[XY(x, y)] = CRGB(sp.pal[pos < sp.len ? sp.px[pos] : 0]);
-    }
-  i = (i + 1) % pacSteps.size();
 }
 
 // Небо з сонцем: k = 0 ніч (сонце під горизонтом), 255 день (сонце вгорі, тепле небо)
@@ -269,8 +227,178 @@ void effectSunset() {
   if (k == 255) { power = false; changed(); }
 }
 
-void (*EFFECTS[MODE_COUNT])() = {effectSolid, effectRainbow, effectFire, effectConfetti, effectBreathe,
-                                 effectHeart, effectRain, effectSnow, effectPacman, effectSunrise, effectSunset};
+CRGB iconColor(char ch) {
+  switch (ch) {
+    case 'W': return CRGB(255, 255, 255);
+    case 'S': return CRGB(130, 130, 140);
+    case 'K': return CRGB(50, 50, 60);
+    case 'R': return CRGB(255, 0, 0);
+    case 'O': return CRGB(255, 80, 0);
+    case 'Y': return CRGB(255, 180, 0);
+    case 'G': return CRGB(0, 220, 30);
+    case 'C': return CRGB(0, 190, 255);
+    case 'B': return CRGB(0, 70, 255);
+    case 'N': return CRGB(120, 50, 5);
+    default:  return CRGB::Black;
+  }
+}
+
+// ===== Годинник (час з NTP) =====
+// Поточний місцевий час; false, поки NTP ще не синхронізувався
+bool localNow(struct tm& t, float& sec) {
+  timeval tv;
+  gettimeofday(&tv, nullptr);
+  if (tv.tv_sec < 1700000000) return false;
+  localtime_r(&tv.tv_sec, &t);
+  sec = t.tm_sec + tv.tv_usec / 1e6f;
+  return true;
+}
+
+const uint8_t DIGITS[10][7] = {        // цифри 5x7, біт 4 — лівий стовпчик
+  {14, 17, 19, 21, 25, 17, 14}, {4, 12, 4, 4, 4, 4, 14},   {14, 17, 1, 2, 4, 8, 31},  {31, 2, 4, 2, 1, 17, 14},
+  {2, 6, 10, 18, 31, 2, 2},     {31, 16, 30, 1, 1, 17, 14}, {6, 8, 16, 30, 17, 17, 14}, {31, 1, 2, 4, 8, 8, 8},
+  {14, 17, 17, 14, 17, 17, 14}, {14, 17, 17, 15, 1, 2, 12}};
+
+void drawDigit(uint8_t d, uint8_t x0, uint8_t y0, CRGB c) {
+  for (uint8_t y = 0; y < 7; y++)
+    for (uint8_t x = 0; x < 5; x++)
+      if (DIGITS[d][y] >> (4 - x) & 1) leds[XY(x0 + x, y0 + y)] = c;
+}
+
+// Цифровий: години зверху, хвилини знизу (відступи по 2 пікселі з боків), між ними по центру блимає точка 2x2
+void drawTime() {
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  CRGB c(color);
+  struct tm t;
+  float s;
+  if (!localNow(t, s)) {                 // часу ще нема: риски на місці цифр
+    for (uint8_t x = 2; x <= 13; x++) if (x < 7 || x > 8) leds[XY(x, 3)] = leds[XY(x, 12)] = c;
+    return;
+  }
+  drawDigit(t.tm_hour / 10, 2, 0, c);
+  drawDigit(t.tm_hour % 10, 9, 0, c);
+  drawDigit(t.tm_min / 10, 2, 9, c);
+  drawDigit(t.tm_min % 10, 9, 9, c);
+  if (s - (int)s < 0.5f) leds[XY(7, 7)] = leds[XY(8, 7)] = leds[XY(7, 8)] = leds[XY(8, 8)] = c;
+}
+
+// Точка з дробовими координатами: яскравість ділиться між 4 сусідніми пікселями (згладжування)
+void plot(float x, float y, CRGB c) {
+  int x0 = floorf(x), y0 = floorf(y);
+  float fx = x - x0, fy = y - y0;
+  const float w[4] = {(1 - fx) * (1 - fy), fx * (1 - fy), (1 - fx) * fy, fx * fy};
+  for (uint8_t i = 0; i < 4; i++) {
+    int px = x0 + (i & 1), py = y0 + (i >> 1);
+    if (px < 0 || px >= W || py < 0 || py >= H || w[i] < 0.02f) continue;
+    CRGB p = c;
+    p.nscale8_video(w[i] * 255);
+    leds[XY(px, py)] |= p;               // максимум по каналах: стрілки не «пересвічують» одна одну
+  }
+}
+
+void hand(float turns, float len, CRGB c) {   // turns: 0 = 12 година, 0.25 = 3 година
+  float a = turns * TWO_PI;
+  for (float r = 0; r <= len; r += 0.5f) plot(7.5f + sinf(a) * r, 7.5f - cosf(a) * r, c);
+}
+
+// Аналоговий: 12 позначок по краю (12/3/6/9 яскравіші), годинна, хвилинна й плавна секундна стрілки
+void drawDial() {
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  CRGB c(color);
+  for (uint8_t i = 0; i < 12; i++) {
+    CRGB m = c;
+    m.nscale8_video(i % 3 ? 60 : 160);
+    plot(7.5f + sinf(i * TWO_PI / 12) * 7.5f, 7.5f - cosf(i * TWO_PI / 12) * 7.5f, m);
+  }
+  struct tm t;
+  float s;
+  if (!localNow(t, s)) return;
+  hand((t.tm_hour % 12 + t.tm_min / 60.0f) / 12, 4.0f, c);
+  hand((t.tm_min + s / 60) / 60, 6.0f, blend(c, CRGB::White, 128));
+  hand(s / 60, 6.5f, CRGB(140, 0, 0));
+}
+
+// ===== Погода: кімната й вулиця (MQTT lamp/<id>/weather від HA) =====
+// {"in":21.5,"out":-3.2,"cond":"cloudy","ts":<unix>}; режими годинника по черзі показують час і цю сторінку
+float    wxIn = NAN, wxOut = NAN;
+String   wxCond;
+int64_t  wxTs = 0;                       // коли HA опублікував дані (unix); старші за 3 год не показуємо —
+                                         // за часом публікації, бо retained-повідомлення приходить і після реконекту
+
+const uint8_t SMALL_DIGITS[10][5] = {    // цифри 3x5, біт 2 — лівий стовпчик
+  {7, 5, 5, 5, 7}, {2, 6, 2, 2, 7}, {7, 1, 7, 4, 7}, {7, 1, 7, 1, 7}, {5, 5, 7, 1, 1},
+  {7, 4, 7, 1, 7}, {7, 4, 7, 5, 7}, {7, 1, 1, 2, 2}, {7, 5, 7, 5, 7}, {7, 5, 7, 1, 7}};
+
+uint8_t textWidth(const char* s) {       // цифра 3, мінус 2, між знаками 1
+  uint8_t w = 0;
+  for (const char* p = s; *p; p++) w += (*p == '-' ? 2 : 3) + (p[1] ? 1 : 0);
+  return w;
+}
+
+void drawText(const char* s, int x, int y, CRGB c) {
+  for (const char* p = s; *p; p++) {
+    if (*p == '-') leds[XY(x, y + 2)] = leds[XY(x + 1, y + 2)] = c;
+    else
+      for (uint8_t r = 0; r < 5; r++)
+        for (uint8_t b = 0; b < 3; b++)
+          if (SMALL_DIGITS[*p - '0'][r] >> (2 - b) & 1) leds[XY(x + b, y + r)] = c;
+    x += (*p == '-' ? 2 : 3) + 1;
+  }
+}
+
+const SmallIcon* wxIcon(const String& cond) {
+  String key = " " + cond + " ";
+  for (auto& ic : WX_ICONS)
+    if ((" " + String(ic.name) + " ").indexOf(key) >= 0) return &ic;
+  return &WX_ICONS[4];                   // невідомий стан — хмара
+}
+
+void tempText(float v, char* buf) {
+  if (isnan(v)) strcpy(buf, "--");
+  else snprintf(buf, 5, "%d", (int)constrain(lroundf(v), -99, 99));
+}
+
+// Два рядки: кімната (будиночок) зверху, вулиця (погода) знизу. Іконки в одному стовпчику, числа вирівняні
+// праворуч до них, весь блок по центру; проміжок 1 або 2, щоб ширина блоку була парною (рівні відступи)
+void drawWeather() {
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  char a[5], b[5];
+  tempText(wxIn, a);
+  tempText(wxOut, b);
+  uint8_t w = max(textWidth(a), textWidth(b));
+  uint8_t gap = (w + 7) % 2 == 0 ? 1 : 2;
+  if (w + gap + 6 > W) gap = W - 6 - w;  // «-12» і подібні — впритул до іконки
+  int ix = (W - (w + gap + 6)) / 2 + w + gap;
+  const SmallIcon* icons[2] = {&WX_ICONS[0], wxIcon(wxCond)};
+  const char* txt[2] = {a, b};
+  for (uint8_t i = 0; i < 2; i++) {
+    uint8_t y0 = i ? 9 : 0, tw = textWidth(txt[i]);
+    int end = tw <= ix - 1 ? ix - 2 : ix - 1;
+    drawText(txt[i], end - tw + 1, y0 + 1, CRGB(color));
+    for (uint8_t y = 0; y < 7; y++)
+      for (uint8_t x = 0; x < 6; x++)
+        if (icons[i]->px[y][x] != '.') leds[XY(ix + x, y0 + y)] = iconColor(icons[i]->px[y][x]);
+  }
+}
+
+// Час 10 с, погода 5 с; на межах сторінок 300 мс згасання й наростання
+void clockPages(void (*drawClock)()) {
+  const uint32_t CLOCK_MS = 10000, CYCLE_MS = 15000, FADE_MS = 300;
+  int64_t age = (int64_t)time(nullptr) - wxTs;
+  bool fresh = time(nullptr) > 1700000000 && age > -600 && age < 3 * 3600 && (!isnan(wxIn) || !isnan(wxOut));
+  if (!fresh) { drawClock(); return; }
+  uint32_t t = millis() % CYCLE_MS;
+  if (t < CLOCK_MS) drawClock(); else drawWeather();
+  uint32_t edge = t < CLOCK_MS ? min(t, CLOCK_MS - t) : min(t - CLOCK_MS, CYCLE_MS - t);
+  if (edge < FADE_MS) nscale8_video(leds, NUM_LEDS, edge * 255 / FADE_MS);
+}
+
+void effectClock() { clockPages(drawTime); }
+void effectDial()  { clockPages(drawDial); }
+
+void (*EFFECTS[MODE_COUNT])() = {effectSolid, effectRainbow, effectFire, effectConfetti,
+                                 effectHeart, effectRain, effectSnow, effectSunrise, effectSunset,
+                                 effectClock, effectDial};
 
 // Тест орієнтації: верхній рядок червоний, лівий стовпчик зелений, кут білий
 void drawTest() {
@@ -328,20 +456,70 @@ bool openAnim() {
 void animStep() {
   if (!animFile) { fill_solid(leds, NUM_LEDS, CRGB::Black); return; }
   if ((int32_t)(millis() - animNext) < 0) return;
-  if (animIdx >= animCount) { animFile.seek(HDR_BYTES); animIdx = 0; }
+  // Кадр коротший за тік (20 мс) на високій швидкості — пропускаємо кадри, щоб темп відповідав повзунку
   static uint8_t buf[REC_BYTES];
-  if (animFile.read(buf, REC_BYTES) != REC_BYTES) { animIdx = animCount; return; }
-  uint16_t d = buf[0] | (buf[1] << 8);
+  uint8_t n = 0;
+  do {
+    if (animIdx >= animCount) { animFile.seek(HDR_BYTES); animIdx = 0; }
+    if (animFile.read(buf, REC_BYTES) != REC_BYTES) { animIdx = animCount; return; }
+    animIdx++;
+    uint16_t d = buf[0] | (buf[1] << 8);
+    uint32_t step = animCount == 1 ? 60000 : max<uint32_t>(max<uint16_t>(d, 20) * 100UL / speed, 5);
+    animNext = (int32_t)(millis() - animNext) > 500 ? millis() + step : animNext + step;   // відстали — без надолуження
+  } while ((int32_t)(millis() - animNext) >= 0 && ++n < 8);
   for (uint8_t y = 0; y < H; y++)
     for (uint8_t x = 0; x < W; x++) {
       const uint8_t* p = buf + 2 + (y * W + x) * 3;
       leds[XY(x, y)] = CRGB(gamma8[p[0]], gamma8[p[1]], gamma8[p[2]]);
     }
-  animIdx++;
-  animNext = millis() + (animCount == 1 ? 60000 : max<uint16_t>(d, 20));
+}
+
+// ===== Іконки-сповіщення від HA =====
+// Показуються поверх ефекту (і коли лампа вимкнена) duration секунд, м'яко пульсуючи; потім лампа повертається як була
+int8_t   iconIdx = -1;
+uint32_t iconStart = 0, iconMs = 0;
+uint8_t  iconBri = 0;                    // 0 — поточна яскравість лампи
+
+bool rampReset = false;                  // наступний кадр — з плавного старту ліміту струму (showLeds)
+
+// Порожня або невідома назва прибирає іконку
+void showIcon(const String& n, uint32_t sec, int bri) {
+  iconIdx = -1;
+  for (uint8_t i = 0; i < sizeof(ICONS) / sizeof(ICONS[0]); i++)
+    if (n == ICONS[i].name) iconIdx = i;
+  iconStart = millis();
+  iconMs    = constrain(sec, 1UL, 3600UL) * 1000;
+  iconBri   = constrain(bri, 0, 255);
+  rampReset = true;
+}
+
+void drawIcon() {
+  uint32_t t = millis() - iconStart;
+  uint8_t k = 255 - scale8(110, 255 - cos8(t / 4));     // пульсація ~1 Гц між 57 і 100 %
+  if (iconMs - t < 400) k = scale8(k, (iconMs - t) * 255 / 400);   // згасання наприкінці
+  const Icon& ic = ICONS[iconIdx];
+  for (uint8_t y = 0; y < H; y++)
+    for (uint8_t x = 0; x < W; x++) {
+      CRGB c = iconColor(ic.px[y][x]);
+      c.nscale8_video(k);
+      leds[XY(x, y)] = c;
+    }
 }
 
 // ===== Керування станом =====
+// Чи діє повзунок швидкості: Світанок, Захід і годинники йдуть за реальним часом
+bool speedScaled(uint8_t m) {
+  return m != M_SOLID && m != M_SUNRISE && m != M_SUNSET && m != M_CLOCK && m != M_DIAL && m != M_DRAW;
+}
+
+// Нова швидкість діє одразу: залишок затримки поточного кадру анімації перераховується
+void setSpeed(int v) {
+  uint16_t sp = constrain(v, 25, 400);
+  int32_t left = animNext - millis();
+  if (mode == M_ANIM && left > 0) animNext = millis() + (uint32_t)left * speed / sp;
+  speed = sp;
+}
+
 void setMode(uint8_t m) {
   if (m >= MODE_COUNT) return;
   skyMs = SKY_MS_DEFAULT;
@@ -349,8 +527,6 @@ void setMode(uint8_t m) {
   mode = m;
   closeAnim();
 }
-
-bool rampReset = false;                  // наступний кадр — з плавного старту ліміту струму (showLeds)
 
 bool playAnim(const String& n) {
   animName = cleanName(n);
@@ -383,7 +559,7 @@ void setEffect(const String& e) {
 
 void setColor(uint32_t c) {
   color = c & 0xFFFFFF;
-  if (mode != M_SOLID && mode != M_BREATHE) setMode(M_SOLID);
+  if (mode != M_SOLID && mode != M_CLOCK && mode != M_DIAL) setMode(M_SOLID);
 }
 
 void publishState();
@@ -393,7 +569,7 @@ void changed() {
 }
 
 void showLeds() {
-  bool on = power || (int32_t)(testUntil - millis()) > 0;
+  bool on = power || iconIdx >= 0 || (int32_t)(testUntil - millis()) > 0;
   // Ліміт струму. Яскравість рахується від пікової потужності кадрів, що повільно спадає (~4 с), тож не скаче
   // з кожним кадром «Вогню»; повзунок діє завжди: 255 = максимум, який дозволяє ліміт для поточного ефекту.
   // Після вмикання чи зміни режиму ліміт наростає ~1 с — різкий стрибок струму просаджує живлення (brownout).
@@ -406,7 +582,8 @@ void showLeds() {
   rampReset = false;
   ramp = min<uint32_t>(5 * cfg.maxMa, ramp + 150);
   uint8_t bMax = min<uint32_t>(255, (uint64_t)ramp * 256 / max<uint32_t>(peak, 1));
-  uint8_t b = on ? (uint16_t)bMax * brightness / 255 : 0;
+  uint8_t bri = iconIdx >= 0 && iconBri ? iconBri : brightness;
+  uint8_t b = on ? (uint16_t)bMax * bri / 255 : 0;
   for (uint16_t i = 0; i < NUM_LEDS; i++) {
     CRGB c = leds[i];
     c.nscale8_video(b);
@@ -422,10 +599,18 @@ void loadAll() {
   mode       = prefs.getUChar("mode", M_SOLID);
   brightness = prefs.getUChar("bri", 80);
   color      = prefs.getUInt("color", 0xFF9329);
+  speed      = constrain(prefs.getUShort("speed", 100), 25, 400);
   animName   = prefs.getString("anim", "");
-  if (!prefs.isKey("mv") && mode >= 5) mode = mode == 5 ? M_ANIM : M_SOLID;   // старі номери: 5 анімація, 6 малювання
-  else if (prefs.getUChar("mv", 0) == 1 && mode >= M_SUNRISE) mode += 2;     // v1: анімація була 9, малювання 10
-  else if (prefs.getUChar("mv", 0) == 2 && mode >= M_SUNSET) mode++;         // v2: анімація була 10, малювання 11
+  // Номери режимів змінювались: спершу зводимо до v3 (8 Пакман, 9 Світанок, 10 Захід, 11 анімація, 12 малювання)
+  uint8_t mv = prefs.getUChar("mv", 0);
+  if (!prefs.isKey("mv") && mode >= 5) mode = mode == 5 ? 11 : M_SOLID;      // старі номери: 5 анімація, 6 малювання
+  else if (mv == 1 && mode >= 9) mode += 2;                                 // v1: анімація була 9, малювання 10
+  else if (mv == 2 && mode >= 10) mode++;                                   // v2: анімація була 10, малювання 11
+  if (mv < 4) {                                                             // v3 → v4: без Дихання й Пакмана, + 2 годинники
+    if (mode == 4 || mode == 8) mode = M_SOLID;
+    else if (mode >= 5 && mode <= 7) mode--;
+    else if (mode == 9 || mode == 10) mode -= 2;
+  }
   prefs.end();
 
   prefs.begin("cfg", true);
@@ -448,8 +633,9 @@ void saveState() {
   prefs.putUChar("mode", mode);
   prefs.putUChar("bri", brightness);
   prefs.putUInt("color", color);
+  prefs.putUShort("speed", speed);
   prefs.putString("anim", animName);
-  prefs.putUChar("mv", 3);
+  prefs.putUChar("mv", 4);
   prefs.end();
 }
 
@@ -495,6 +681,30 @@ void publishDiscovery() {
   String s;
   serializeJson(d, s);
   mqtt.publish(("homeassistant/light/" + devId + "/config").c_str(), s.c_str(), true);
+
+  // Повзунки: швидкість анімацій і ліміт струму; значення беруться з того ж JSON-стану
+  auto number = [](const char* key, const char* name, int mn, int mx, int step, const char* unit, const char* icon, bool config) {
+    JsonDocument n;
+    n["name"]    = name;
+    n["uniq_id"] = devId + "_" + key;
+    n["cmd_t"]   = topic(key);
+    n["stat_t"]  = topic("state");
+    n["val_tpl"] = String("{{ value_json.") + key + " }}";
+    n["avty_t"]  = topic("avail");
+    n["min"]     = mn;
+    n["max"]     = mx;
+    n["step"]    = step;
+    n["unit_of_meas"] = unit;
+    n["mode"]    = "slider";
+    n["ic"]      = icon;
+    if (config) n["ent_cat"] = "config";
+    n["dev"]["ids"].to<JsonArray>().add(devId);
+    String out;
+    serializeJson(n, out);
+    mqtt.publish(("homeassistant/number/" + devId + "_" + key + "/config").c_str(), out.c_str(), true);
+  };
+  number("speed", "Швидкість анімацій", 25, 400, 5, "%", "mdi:speedometer", false);
+  number("maxma", "Ліміт струму", 300, 3000, 50, "mA", "mdi:current-dc", true);
 }
 
 void publishState() {
@@ -508,6 +718,8 @@ void publishState() {
   c["g"] = (color >> 8) & 255;
   c["b"] = color & 255;
   if (mode != M_DRAW) d["effect"] = effectName();
+  d["speed"] = speed;
+  d["maxma"] = cfg.maxMa;
   String s;
   serializeJson(d, s);
   mqtt.publish(topic("state").c_str(), s.c_str(), true);
@@ -518,8 +730,30 @@ void onMqtt(char* tp, byte* payload, unsigned int len) {
     if (len == 6 && memcmp(payload, "online", 6) == 0) { publishDiscovery(); publishState(); }
     return;
   }
+  String t = tp;
+  if (t == topic("speed") || t == topic("maxma")) {        // повзунки HA: число, можливо з ".0"
+    char b[12];
+    len = min(len, (unsigned)sizeof(b) - 1);
+    memcpy(b, payload, len);
+    b[len] = 0;
+    int v = atoi(b);
+    if (t == topic("speed")) { setSpeed(v); changed(); }
+    else { cfg.maxMa = constrain(v, 300, 20000); saveConfig(); publishState(); }
+    return;
+  }
   JsonDocument d;
   if (deserializeJson(d, payload, len)) return;
+  if (t == topic("weather")) {                             // {"in":21.5,"out":-3.2,"cond":"cloudy","ts":<unix>}
+    wxIn   = d["in"].is<float>() ? d["in"].as<float>() : NAN;
+    wxOut  = d["out"].is<float>() ? d["out"].as<float>() : NAN;
+    wxCond = d["cond"] | "";
+    wxTs   = d["ts"] | (int64_t)0;
+    return;
+  }
+  if (t == topic("icon")) {                                // {"icon":"wash","duration":10,"brightness":120}
+    showIcon(d["icon"] | "", d["duration"] | 10, d["brightness"] | 0);
+    return;
+  }
   if (d["state"].is<const char*>()) power = strcmp(d["state"].as<const char*>(), "ON") == 0;
   if (d["brightness"].is<int>())    brightness = constrain(d["brightness"].as<int>(), 1, 255);
   if (d["color"].is<JsonObject>())
@@ -547,6 +781,10 @@ void mqttLoop() {
   Serial.println("MQTT connected");
   mqtt.publish(topic("avail").c_str(), "online", true);
   mqtt.subscribe(topic("set").c_str());
+  mqtt.subscribe(topic("speed").c_str());
+  mqtt.subscribe(topic("maxma").c_str());
+  mqtt.subscribe(topic("icon").c_str());
+  mqtt.subscribe(topic("weather").c_str());
   mqtt.subscribe("homeassistant/status");
   publishDiscovery();
   publishState();
@@ -559,6 +797,8 @@ void sendState() {
   d["mode"]     = mode;
   d["animMode"] = M_ANIM;
   d["bri"]      = brightness;
+  d["speed"]    = speed;
+  d["speedFx"]  = speedScaled(mode);
   char hex[7];
   snprintf(hex, sizeof(hex), "%06X", (unsigned)color);
   d["color"] = hex;
@@ -594,6 +834,7 @@ void handleSet() {
   if (server.hasArg("mode"))  setMode(server.arg("mode").toInt());
   if (server.hasArg("anim"))  playAnim(server.arg("anim"));
   if (server.hasArg("bri"))   brightness = constrain(server.arg("bri").toInt(), 1, 255);
+  if (server.hasArg("speed")) setSpeed(server.arg("speed").toInt());
   if (server.hasArg("color")) setColor(strtoul(server.arg("color").c_str(), nullptr, 16));
   changed();
   sendState();
@@ -618,7 +859,14 @@ void handleCfg() {
   if (server.hasArg("rot") || server.hasArg("flip") || server.hasArg("serp")) testUntil = millis() + 5000;
   buildMap();
   saveConfig();
+  publishState();
   sendState();
+}
+
+// Перевірка іконки з браузера: /icon?name=wash&dur=5
+void handleIcon() {
+  showIcon(server.arg("name"), server.hasArg("dur") ? server.arg("dur").toInt() : 10, server.arg("bri").toInt());
+  server.send(204);
 }
 
 void handleNet() {
@@ -805,6 +1053,7 @@ void setup() {
   devId = id;
 
   setupWiFi();
+  configTzTime(TZ_INFO, "pool.ntp.org", "time.google.com");   // SNTP далі сам оновлюється й пробує, поки нема мережі
   MDNS.begin(HOSTNAME);
   MDNS.addService("http", "tcp", 80);
 
@@ -815,6 +1064,7 @@ void setup() {
   server.on("/",       [] { server.send(200, "text/html", PAGE); });
   server.on("/state",  sendState);
   server.on("/crash",  handleCrash);
+  server.on("/icon",   handleIcon);
   server.on("/set",    handleSet);
   server.on("/cfg",    handleCfg);
   server.on("/net",    HTTP_POST, handleNet);
@@ -851,11 +1101,18 @@ void loop() {
     static bool wasOn = false;
     if (power && !wasOn) fxStart = true;                  // після вмикання ефект починається спочатку (Світанок, Захід)
     wasOn = power;
+    if (iconIdx >= 0 && millis() - iconStart >= iconMs) { iconIdx = -1; rampReset = true; }   // іконку показано
     if ((int32_t)(testUntil - millis()) > 0) drawTest();
+    else if (iconIdx >= 0) drawIcon();
     else if (power) {
       if (mode == M_ANIM) animStep();
       else if (mode == M_DRAW) drawStep();
-      else { EFFECTS[mode](); fxStart = false; }
+      else {
+        // Швидкість: за тік 20 мс ефект робить speed/100 кроків (на 25% — крок раз на 4 тіки, на 400% — 4 кроки)
+        static uint16_t acc = 0;
+        acc = fxStart ? 100 : acc + (speedScaled(mode) ? speed : 100);
+        for (; acc >= 100; acc -= 100) { fxClock += 20; EFFECTS[mode](); fxStart = false; }
+      }
     }
     showLeds();
   }

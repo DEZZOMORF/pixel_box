@@ -30,7 +30,8 @@ progress{width:100%;margin:8px 0}
 
 <section id="ctl">
  <div class="card"><button id="pw">…</button></div>
- <div class="card"><label>Режим</label><div id="modes"></div></div>
+ <div class="card"><label>Режим</label><div id="modes"></div>
+  <div id="spdbox"><label>Швидкість анімації <span id="spdv"></span></label><input type="range" id="spd" min="-100" max="100"></div></div>
  <div class="card"><label>Яскравість</label><input type="range" id="bri" min="1" max="255">
   <label>Колір</label><input type="color" id="col"></div>
  <div class="card"><label>Фото й анімації</label><div id="anims"></div><div class="mut" id="fs"></div></div>
@@ -116,6 +117,8 @@ function render(){
   $('pw').className=st.power?'on':''; $('pw').textContent=st.power?'Увімкнено':'Вимкнено';
   if(document.activeElement!==$('bri')) $('bri').value=st.bri;
   $('col').value='#'+st.color.toLowerCase();
+  $('spdbox').classList.toggle('hide',!st.speedFx);
+  if(document.activeElement!==$('spd')){$('spd').value=fromSpd(st.speed); spdLabel();}
   $('modes').replaceChildren(...st.modes.map((m,i)=>btn(m,()=>set({mode:i}),i===st.mode?'on':'')));
   const rows=st.anims.map(a=>{
     const r=document.createElement('div'); r.className='anim';
@@ -138,6 +141,12 @@ function render(){
 $('pw').onclick=()=>set({power:st.power?0:1});
 $('bri').onchange=e=>set({bri:e.target.value});
 $('col').onchange=e=>set({color:e.target.value.slice(1)});
+// Повзунок швидкості логарифмічний: -100..100 → ×0.25..×4, посередині ×1 (біля середини прилипає до ×1)
+const toSpd=v=>Math.abs(v)<6?100:Math.round(100*Math.pow(4,v/100));
+const fromSpd=s=>Math.round(Math.log(s/100)/Math.log(4)*100);
+const spdLabel=()=>$('spdv').textContent='×'+ +(toSpd(+$('spd').value)/100).toFixed(2);
+$('spd').oninput=spdLabel;
+$('spd').onchange=e=>set({speed:toSpd(+e.target.value)});
 $('rot').onclick=()=>cfgSet({rot:(st.cfg.rot+1)%4});
 $('flip').onclick=()=>cfgSet({flip:st.cfg.flip?0:1});
 $('serp').onchange=e=>cfgSet({serp:e.target.checked?1:0});
