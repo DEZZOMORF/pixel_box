@@ -353,9 +353,8 @@ void drawDate() {
     return;
   }
   uint8_t d = (t.tm_wday + 6) % 7;
-  CRGB wc = d >= 5 ? CRGB(255, 0, 0) : c;
-  drawGlyph(LETTERS[WEEKDAYS[d][0]], 2, 1, wc);
-  drawGlyph(LETTERS[WEEKDAYS[d][1]], 9, 1, wc);
+  drawGlyph(LETTERS[WEEKDAYS[d][0]], 2, 1, c);
+  drawGlyph(LETTERS[WEEKDAYS[d][1]], 9, 1, c);
   char b[6];
   snprintf(b, sizeof(b), "%d.%d", t.tm_mday, t.tm_mon + 1);
   drawText(b, (W - textWidth(b)) / 2, 10, c);
@@ -582,10 +581,15 @@ void changed() {
 
 void showLeds() {
   bool on = power || iconIdx >= 0 || (int32_t)(testUntil - millis()) > 0;
-  static uint32_t peak = 0, ramp = 0;
+  static uint32_t peak = 0, ramp = 0, winMax = 0, prevMax = 0, winStart = 0;
   static uint8_t lastMode = 255;
   uint32_t full = calculate_unscaled_power_mW(leds, NUM_LEDS);
-  peak = max(full, peak - peak / 256);
+  if (!on || mode != lastMode) { winMax = prevMax = 0; winStart = millis(); }
+  if ((mode == M_CLOCK || mode == M_DIAL) && iconIdx < 0) {
+    if (millis() - winStart >= 20000) { prevMax = winMax; winMax = 0; winStart = millis(); }
+    winMax = max(winMax, full);
+    peak = max(winMax, prevMax);
+  } else peak = max(full, peak - peak / 256);
   if (!on || mode != lastMode || rampReset) ramp = 0;
   lastMode = mode;
   rampReset = false;
